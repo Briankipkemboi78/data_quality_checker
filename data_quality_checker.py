@@ -216,12 +216,12 @@ def build_excel_export(
             cell.border    = border
         ws.row_dimensions[1].height = 30
 
-    def write_sheet(ws, df, fill_color):
-        if df.empty:
+    def write_sheet(ws, sheet_df, fill_color):
+        if sheet_df.empty:
             ws.append(["No issues found."])
             return
 
-        data_cols  = [c for c in df.columns if not c.startswith("__")]
+        data_cols  = [c for c in sheet_df.columns if not c.startswith("__")]
         write_cols = data_cols + ["__issue_type__", "__issues__"]
         headers    = [
             c.replace("__issue_type__", "Issue Type").replace("__issues__", "Issue Detail")
@@ -233,7 +233,7 @@ def build_excel_export(
         fill = PatternFill("solid", start_color=fill_color)
         alt  = PatternFill("solid", start_color=COLORS["alt_row"])
 
-        for i, (_, row) in enumerate(df[write_cols].iterrows(), start=2):
+        for i, (_, row) in enumerate(sheet_df[write_cols].iterrows(), start=2):
             ws.append([coerce_cell(v) for v in row])
             row_fill = fill if i % 2 == 0 else alt
             for cell in ws[i]:
@@ -244,7 +244,7 @@ def build_excel_export(
 
         for col_idx, col in enumerate(write_cols, start=1):
             hdr_len = len(str(headers[col_idx - 1]))
-            val_len = int(df[col].astype(str).str.len().max()) if col in df.columns else 0
+            val_len = int(sheet_df[col].astype(str).str.len().max()) if col in sheet_df.columns else 0
             ws.column_dimensions[get_column_letter(col_idx)].width = min(max(hdr_len, val_len) + 4, 40)
 
     # Summary sheet
