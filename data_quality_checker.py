@@ -244,7 +244,7 @@ def build_excel_export(
 
         for col_idx, col in enumerate(write_cols, start=1):
             hdr_len = len(str(headers[col_idx - 1]))
-            val_len = int(sheet_df[col].astype(str).str.len().max()) if col in sheet_df.columns else 0
+            val_len = int(sheet_df[col].astype(str).str.len().max() or 0) if col in sheet_df.columns else 0
             ws.column_dimensions[get_column_letter(col_idx)].width = min(max(hdr_len, val_len) + 4, 40)
 
     # Summary sheet
