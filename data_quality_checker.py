@@ -9,11 +9,11 @@ from openpyxl.utils import get_column_letter
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Data Quality Checker",
-    page_icon="🔍",
     layout="wide",
 )
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
+# For this one we shall use inline css
 st.markdown("""
 <style>
     .main-header {
@@ -50,7 +50,7 @@ st.markdown("""
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def safe_convert_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Cast mixed-type object columns to str so st.dataframe / PyArrow works."""
+    """Cast mixed-type object columns to str."""
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
@@ -368,13 +368,13 @@ with st.sidebar:
 
 # ── File Upload ───────────────────────────────────────────────────────────────
 uploaded = st.file_uploader(
-    "📂 Upload Excel File (.xlsx / .xls)",
+    "Upload Excel File (.xlsx / .xls)",
     type=["xlsx", "xls"],
     help="The file is processed locally — no data is stored.",
 )
 
 if uploaded is None:
-    st.info("👆 Upload an Excel file to get started.")
+    st.info("Upload an Excel file to get started.")
     st.stop()
 
 # ── Load Data ─────────────────────────────────────────────────────────────────
@@ -399,7 +399,7 @@ st.markdown(
 st.dataframe(safe_convert_df(df.head(50)), use_container_width=True, height=240)
 
 # ── Column Selection ──────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>🎯 Select Columns to Check</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>Select Columns to Check</div>", unsafe_allow_html=True)
 
 if "select_all_triggered" not in st.session_state:
     st.session_state["select_all_triggered"] = False
@@ -423,7 +423,7 @@ if st.session_state["select_all_triggered"] and selected_cols:
     st.session_state["select_all_triggered"] = False
 
 if not selected_cols:
-    st.info("☝️ Please select at least one column above to run quality checks.")
+    st.info("Please select at least one column above to run quality checks.")
     st.stop()
 
 # ── Run Checks ────────────────────────────────────────────────────────────────
@@ -472,7 +472,7 @@ with st.expander("📈 Column-Level Statistics", expanded=False):
     st.dataframe(pd.DataFrame(stats_rows), use_container_width=True)
 
 # ── Issue Tabs ────────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>🔎 Issue Details</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>Issue Details</div>", unsafe_allow_html=True)
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "❌ Missing Values",
     "🔁 Duplicates",           # ← NEW tab
