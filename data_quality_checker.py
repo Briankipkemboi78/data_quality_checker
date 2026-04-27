@@ -368,7 +368,7 @@ with st.sidebar:
 
 # ── File Upload ───────────────────────────────────────────────────────────────
 uploaded = st.file_uploader(
-    "Upload Excel File (.xlsx / .xls)",
+    "📂 Upload Excel File (.xlsx / .xls)",
     type=["xlsx", "xls"],
     help="The file is processed locally — no data is stored.",
 )
@@ -458,14 +458,14 @@ with st.expander("📈 Column-Level Statistics", expanded=False):
     stats_rows = []
     for col in selected_cols:
         null_count = int(df[col].isnull().sum())
-        dup_count  = int(df.duplicated(subset=[col], keep=False).sum())   # ← NEW
+        dup_count  = int(df.duplicated(subset=[col], keep=False).sum())   
         stats_rows.append({
             "Column":        col,
             "Dtype":         str(df[col].dtype),
             "Nulls":         null_count,
             "Null %":        f"{null_count / len(df) * 100:.1f}%",
-            "Duplicates":    dup_count,                                    # ← NEW
-            "Dup %":         f"{dup_count / len(df) * 100:.1f}%",         # ← NEW
+            "Duplicates":    dup_count,                                   
+            "Dup %":         f"{dup_count / len(df) * 100:.1f}%",         
             "Unique Values": int(df[col].nunique()),
             "Sample":        str(df[col].dropna().iloc[0]) if df[col].notna().any() else "—",
         })
