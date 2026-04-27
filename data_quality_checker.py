@@ -13,7 +13,6 @@ st.set_page_config(
 )
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
-# For this one we shall use inline css
 st.markdown("""
 <style>
     .main-header {
@@ -72,17 +71,6 @@ def detect_missing(df: pd.DataFrame, cols: list) -> pd.DataFrame:
 
 
 def detect_duplicates(df: pd.DataFrame, cols: list, keep: str = "first") -> pd.DataFrame:
-    """
-    Flag rows that are duplicated across the selected columns.
-
-    Parameters
-    ----------
-    df   : full dataframe
-    cols : columns to consider when deciding if two rows are duplicates
-    keep : 'first'  — keep the first occurrence, flag the rest
-           'last'   — keep the last  occurrence, flag the rest
-           'none'   — flag ALL occurrences (including the original)
-    """
     keep_arg = False if keep == "none" else keep
     dup_mask = df.duplicated(subset=cols, keep=keep_arg)
     result   = df[dup_mask].copy()
@@ -90,11 +78,10 @@ def detect_duplicates(df: pd.DataFrame, cols: list, keep: str = "first") -> pd.D
     if result.empty:
         return result
 
-    # For each flagged row, find what row number its "original" was
     def find_original(row_idx):
         row_vals = df.loc[row_idx, cols]
         matches  = df[(df[cols] == row_vals).all(axis=1)].index.tolist()
-        others   = [i + 2 for i in matches if i != row_idx]  # +2 → Excel row (1-based + header)
+        others   = [i + 2 for i in matches if i != row_idx]
         return f"Duplicate of row(s): {others}"
 
     result["__issues__"]     = [find_original(i) for i in result.index]
@@ -116,7 +103,7 @@ def detect_outliers(df: pd.DataFrame, cols: list, method: str = "IQR") -> pd.Dat
             continue
         if method == "IQR":
             q1, q3 = series.quantile(0.25), series.quantile(0.75)
-            iqr = q3 - q1
+            iqr    = q3 - q1
             lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
         else:
             mean, std = series.mean(), series.std()
@@ -164,23 +151,18 @@ def safe_concat_dedup(frames: list, base_cols: list) -> pd.DataFrame:
     if not non_empty:
         return pd.DataFrame()
     combined = pd.concat(non_empty, ignore_index=True)
-    subset = [c for c in base_cols if c in combined.columns]
+    subset   = [c for c in base_cols if c in combined.columns]
     if subset:
         combined = combined.drop_duplicates(subset=subset)
     return combined
 
 
 def coerce_cell(v):
-    if isinstance(v, (np.integer,)):
-        return int(v)
-    if isinstance(v, (np.floating,)):
-        return None if np.isnan(v) else float(v)
-    if isinstance(v, (np.bool_,)):
-        return bool(v)
-    if isinstance(v, float) and np.isnan(v):
-        return None
-    if not isinstance(v, (int, float, str, bool, type(None))):
-        return str(v)
+    if isinstance(v, (np.integer,)):          return int(v)
+    if isinstance(v, (np.floating,)):         return None if np.isnan(v) else float(v)
+    if isinstance(v, (np.bool_,)):            return bool(v)
+    if isinstance(v, float) and np.isnan(v): return None
+    if not isinstance(v, (int, float, str, bool, type(None))): return str(v)
     return v
 
 
@@ -196,14 +178,14 @@ def build_excel_export(
     wb.remove(wb.active)
 
     COLORS = {
-        "header_bg":   "1e3a5f",
-        "header_fg":   "FFFFFF",
-        "missing":     "FDECEA",
-        "duplicate":   "E8F4FD",   # light blue for duplicates
-        "outlier":     "FEF3E2",
-        "dtype":       "F3E5F5",
-        "summary_bg":  "EBF5FB",
-        "alt_row":     "F8F9FA",
+        "header_bg":  "1e3a5f",
+        "header_fg":  "FFFFFF",
+        "missing":    "FDECEA",
+        "duplicate":  "E8F4FD",
+        "outlier":    "FEF3E2",
+        "dtype":      "F3E5F5",
+        "summary_bg": "EBF5FB",
+        "alt_row":    "F8F9FA",
     }
     thin   = Side(style="thin", color="CCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -220,7 +202,6 @@ def build_excel_export(
         if sheet_df.empty:
             ws.append(["No issues found."])
             return
-
         data_cols  = [c for c in sheet_df.columns if not c.startswith("__")]
         write_cols = data_cols + ["__issue_type__", "__issues__"]
         headers    = [
@@ -229,10 +210,8 @@ def build_excel_export(
         ]
         ws.append(headers)
         style_header(ws)
-
         fill = PatternFill("solid", start_color=fill_color)
         alt  = PatternFill("solid", start_color=COLORS["alt_row"])
-
         for i, (_, row) in enumerate(sheet_df[write_cols].iterrows(), start=2):
             ws.append([coerce_cell(v) for v in row])
             row_fill = fill if i % 2 == 0 else alt
@@ -241,13 +220,11 @@ def build_excel_export(
                 cell.border    = border
                 cell.alignment = Alignment(vertical="center")
                 cell.font      = Font(name="Arial", size=9)
-
         for col_idx, col in enumerate(write_cols, start=1):
             hdr_len = len(str(headers[col_idx - 1]))
             val_len = int(sheet_df[col].astype(str).str.len().fillna(0).max()) if col in sheet_df.columns else 0
             ws.column_dimensions[get_column_letter(col_idx)].width = min(max(hdr_len, val_len) + 4, 40)
 
-    # Summary sheet
     ws_sum = wb.create_sheet("Summary")
     combined_count = len(
         safe_concat_dedup([missing_df, duplicate_df, outlier_df, dtype_df], list(original.columns))
@@ -255,14 +232,14 @@ def build_excel_export(
     summary_data = [
         ["Data Quality Report", ""],
         ["", ""],
-        ["Metric",                   "Value"],
-        ["Total Rows Checked",       len(original)],
-        ["Columns Checked",          ", ".join(selected_cols)],
-        ["Missing Value Rows",       len(missing_df)],
-        ["Duplicate Rows",           len(duplicate_df)],
-        ["Outlier Rows",             len(outlier_df)],
-        ["Data Type Issue Rows",     len(dtype_df)],
-        ["Total Unique Issue Rows",  combined_count],
+        ["Metric",                  "Value"],
+        ["Total Rows Checked",      len(original)],
+        ["Columns Checked",         ", ".join(selected_cols)],
+        ["Missing Value Rows",      len(missing_df)],
+        ["Duplicate Rows",          len(duplicate_df)],
+        ["Outlier Rows",            len(outlier_df)],
+        ["Data Type Issue Rows",    len(dtype_df)],
+        ["Total Unique Issue Rows", combined_count],
     ]
     for r, row in enumerate(summary_data, start=1):
         ws_sum.append(row)
@@ -288,7 +265,6 @@ def build_excel_export(
         COLORS["alt_row"],
     )
 
-    # Original data sheet
     ws_orig = wb.create_sheet("Original Data")
     ws_orig.append(list(original.columns))
     style_header(ws_orig)
@@ -299,7 +275,7 @@ def build_excel_export(
             cell.border    = border
             cell.alignment = Alignment(vertical="center")
     for col_idx, col in enumerate(original.columns, start=1):
-        max_len = max(len(str(col)), int(original[col].astype(str).str.len().max()))
+        max_len = max(len(str(col)), int(original[col].astype(str).str.len().fillna(0).max()))
         ws_orig.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 40)
 
     buf = BytesIO()
@@ -334,11 +310,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Issue Types**")
     check_missing   = st.checkbox("Missing Values",   value=True)
-    check_duplicate = st.checkbox("Duplicates",       value=True)   # ← NEW
+    check_duplicate = st.checkbox("Duplicates",       value=True)
     check_outlier   = st.checkbox("Outliers",         value=True)
     check_dtype     = st.checkbox("Data Type Issues", value=True)
 
-    # ── Duplicate options (shown only when duplicates are enabled) ── NEW
     if check_duplicate:
         st.markdown("**Duplicate Settings**")
         dup_scope = st.radio(
@@ -366,6 +341,7 @@ with st.sidebar:
         "and download a formatted quality report."
     )
 
+
 # ── File Upload ───────────────────────────────────────────────────────────────
 uploaded = st.file_uploader(
     "📂 Upload Excel File (.xlsx / .xls)",
@@ -384,11 +360,31 @@ except Exception as e:
     st.error(f"Could not read file: {e}")
     st.stop()
 
-sheet_name = (
-    st.selectbox("Select Sheet", list(all_sheets.keys()))
-    if len(all_sheets) > 1
-    else list(all_sheets.keys())[0]
-)
+sheet_names = list(all_sheets.keys())
+
+# ── Sheet Selection ───────────────────────────────────────────────────────────
+# KEY FIX: use on_change to detect sheet switches and reset column state
+def on_sheet_change():
+    """Reset column selection and Select All trigger when sheet changes."""
+    st.session_state["select_all_triggered"]  = False
+    st.session_state["selected_cols_default"] = []
+
+if len(sheet_names) > 1:
+    sheet_name = st.selectbox(
+        "Select Sheet",
+        sheet_names,
+        key="sheet_selector",
+        on_change=on_sheet_change,
+    )
+else:
+    sheet_name = sheet_names[0]
+
+# Track last loaded sheet to detect changes (fallback safety)
+if st.session_state.get("last_sheet") != sheet_name:
+    st.session_state["last_sheet"]            = sheet_name
+    st.session_state["select_all_triggered"]  = False
+    st.session_state["selected_cols_default"] = []
+
 df = all_sheets[sheet_name]
 
 st.markdown(
@@ -398,37 +394,57 @@ st.markdown(
 )
 st.dataframe(safe_convert_df(df.head(50)), use_container_width=True, height=240)
 
+
 # ── Column Selection ──────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>Select Columns to Check</div>", unsafe_allow_html=True)
 
-if "select_all_triggered" not in st.session_state:
-    st.session_state["select_all_triggered"] = False
+# Initialise session state keys safely
+for key, default in [
+    ("select_all_triggered",  False),
+    ("selected_cols_default", []),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 col1, col2 = st.columns([3, 1])
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("✅ Select All"):
-        st.session_state["select_all_triggered"] = True
+        st.session_state["select_all_triggered"]  = True
+        st.session_state["selected_cols_default"] = df.columns.tolist()
 
 with col1:
-    default_cols = df.columns.tolist() if st.session_state["select_all_triggered"] else []
+    # Use the stored default so switching sheets starts fresh
+    default_cols = (
+        df.columns.tolist()
+        if st.session_state["select_all_triggered"]
+        else st.session_state.get("selected_cols_default", [])
+    )
+
+    # Only keep defaults that exist in the CURRENT sheet's columns
+    default_cols = [c for c in default_cols if c in df.columns]
+
     selected_cols = st.multiselect(
         "Choose one or more columns",
         options=df.columns.tolist(),
         default=default_cols,
+        key=f"col_select_{sheet_name}",   # ← unique key per sheet forces fresh render
         help="Only selected columns will be analysed for issues.",
     )
 
+# Reset Select All trigger once applied
 if st.session_state["select_all_triggered"] and selected_cols:
-    st.session_state["select_all_triggered"] = False
+    st.session_state["select_all_triggered"]  = False
+    st.session_state["selected_cols_default"] = selected_cols
 
 if not selected_cols:
     st.info("Please select at least one column above to run quality checks.")
     st.stop()
 
+
 # ── Run Checks ────────────────────────────────────────────────────────────────
 with st.spinner("Running quality checks…"):
-    missing_df   = detect_missing(df, selected_cols) if check_missing else pd.DataFrame()
+    missing_df = detect_missing(df, selected_cols) if check_missing else pd.DataFrame()
 
     if check_duplicate:
         dup_cols     = selected_cols if dup_scope == "Selected columns only" else df.columns.tolist()
@@ -436,12 +452,13 @@ with st.spinner("Running quality checks…"):
     else:
         duplicate_df = pd.DataFrame()
 
-    outlier_df   = detect_outliers(df, selected_cols, outlier_method) if check_outlier else pd.DataFrame()
-    dtype_df     = detect_dtype_issues(df, selected_cols)             if check_dtype   else pd.DataFrame()
+    outlier_df = detect_outliers(df, selected_cols, outlier_method) if check_outlier else pd.DataFrame()
+    dtype_df   = detect_dtype_issues(df, selected_cols)             if check_dtype   else pd.DataFrame()
+
 
 # ── Summary Metrics ───────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>📊 Quality Summary</div>", unsafe_allow_html=True)
-m1, m2, m3, m4, m5 = st.columns(5)   # 5 columns now (added Duplicates)
+m1, m2, m3, m4, m5 = st.columns(5)
 
 total_issues = len(
     safe_concat_dedup([missing_df, duplicate_df, outlier_df, dtype_df], list(df.columns))
@@ -449,40 +466,42 @@ total_issues = len(
 
 m1.metric("🗂️ Total Rows",        f"{len(df):,}")
 m2.metric("❌ Missing Value Rows", f"{len(missing_df):,}")
-m3.metric("🔁 Duplicate Rows",     f"{len(duplicate_df):,}")   # ← NEW
+m3.metric("🔁 Duplicate Rows",     f"{len(duplicate_df):,}")
 m4.metric("⚠️ Outlier Rows",       f"{len(outlier_df):,}")
 m5.metric("🔠 Type Issue Rows",    f"{len(dtype_df):,}")
+
 
 # ── Per-Column Stats ──────────────────────────────────────────────────────────
 with st.expander("📈 Column-Level Statistics", expanded=False):
     stats_rows = []
     for col in selected_cols:
         null_count = int(df[col].isnull().sum())
-        dup_count  = int(df.duplicated(subset=[col], keep=False).sum())   
+        dup_count  = int(df.duplicated(subset=[col], keep=False).sum())
         stats_rows.append({
             "Column":        col,
             "Dtype":         str(df[col].dtype),
             "Nulls":         null_count,
             "Null %":        f"{null_count / len(df) * 100:.1f}%",
-            "Duplicates":    dup_count,                                   
-            "Dup %":         f"{dup_count / len(df) * 100:.1f}%",         
+            "Duplicates":    dup_count,
+            "Dup %":         f"{dup_count / len(df) * 100:.1f}%",
             "Unique Values": int(df[col].nunique()),
             "Sample":        str(df[col].dropna().iloc[0]) if df[col].notna().any() else "—",
         })
     st.dataframe(pd.DataFrame(stats_rows), use_container_width=True)
 
+
 # ── Issue Tabs ────────────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>Issue Details</div>", unsafe_allow_html=True)
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "❌ Missing Values",
-    "🔁 Duplicates",           # ← NEW tab
+    "🔁 Duplicates",
     "⚠️ Outliers",
     "🔠 Type Issues",
     "📋 All Issues",
 ])
 
 show_issue_table(tab1, missing_df,   "missing values")
-show_issue_table(tab2, duplicate_df, "duplicates")     # ← NEW
+show_issue_table(tab2, duplicate_df, "duplicates")
 show_issue_table(tab3, outlier_df,   "outliers")
 show_issue_table(tab4, dtype_df,     "data type issues")
 
@@ -500,6 +519,7 @@ with tab5:
         disp = disp.rename(columns={"__issue_type__": "Issue Type", "__issues__": "Issue Detail"})
         st.dataframe(safe_convert_df(disp), use_container_width=True, height=350)
         st.caption(f"{len(combined_all):,} total unique issue row(s)")
+
 
 # ── Export ────────────────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>⬇️ Export Results</div>", unsafe_allow_html=True)
