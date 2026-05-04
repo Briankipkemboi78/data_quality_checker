@@ -1,25 +1,23 @@
 # 🔍 Data Quality Checker — Local Setup Guide
 
-A Streamlit app that audits Excel files for missing values, outliers, and data type issues, then exports a formatted Excel report.
+An app that audits Excel files for missing values, outliers, and data type issues, then exports a formatted Excel report.
 
 ---
 
-## ✅ Prerequisites
+## Prerequisites
 
 - Python 3.9 or higher
 - pip
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Create a virtual environment (recommended)
 
 ```bash
 python -m venv venv
 
-# Activate on macOS/Linux:
-source venv/bin/activate
 
 # Activate on Windows:
 venv\Scripts\activate
@@ -36,12 +34,9 @@ pip install -r requirements.txt
 ```bash
 streamlit run data_quality_checker.py
 ```
-
-The app will open automatically at **http://localhost:8501**
-
 ---
 
-## 🧭 How to Use
+## How to Use
 
 1. **Upload** an `.xlsx` or `.xls` file using the file uploader
 2. **Select a sheet** (if your file has multiple sheets)
@@ -54,7 +49,7 @@ The app will open automatically at **http://localhost:8501**
 
 ---
 
-## 📦 Output Excel Report Structure
+## Output Excel Report Structure
 
 The exported `.xlsx` file contains 6 sheets:
 
@@ -69,7 +64,7 @@ The exported `.xlsx` file contains 6 sheets:
 
 ---
 
-## 🔬 Detection Methods
+## Detection Methods
 
 ### Missing Values
 Flags any row where at least one selected column has a `null`, `NaN`, or blank value.
@@ -83,7 +78,7 @@ Flags cells that cannot be coerced to the expected column dtype (e.g., text in a
 
 ---
 
-## 📁 File Structure
+## File Structure
 
 ```
 data_quality_checker.py   ← Main Streamlit application
@@ -93,11 +88,3 @@ README.md                 ← This guide
 
 ---
 
-## 🛠️ Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| `ModuleNotFoundError` | Run `pip install -r requirements.txt` |
-| `.xls` files not reading | Ensure `xlrd>=2.0.1` is installed |
-| Port already in use | Run `streamlit run data_quality_checker.py --server.port 8502` |
-| Large files are slow | Pre-filter your file or select fewer columns |

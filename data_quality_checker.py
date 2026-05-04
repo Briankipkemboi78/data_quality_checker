@@ -6,13 +6,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ── Page config ───────────────────────────────────────────────────────────────
+# Page config 
 st.set_page_config(
     page_title="Data Quality Checker",
     layout="wide",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+#  Custom CSS 
 st.markdown("""
 <style>
     .main-header {
@@ -35,7 +35,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# --- Header ----
 st.markdown("""
 <div class="main-header">
     <h1 style="margin:0;font-size:2.2rem;">🔍 Data Quality Checker</h1>
@@ -46,10 +46,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ---- Helpers ----
 
 def safe_convert_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Cast mixed-type object columns to str."""
+    """
+    Convert mixed-type object columns to string type for safe display.
+    
+    Identifies columns with mixed data types (e.g., integers and strings in the 
+    same column) and converts them to string type to prevent display/export errors.
+    
+    Args:
+        df: Input DataFrame to process
+        
+    Returns:
+        DataFrame with mixed-type object columns converted to strings
+        
+    Example:
+        >>> df = pd.DataFrame({'col': [1, 'text', 3.5]})
+        >>> safe_df = safe_convert_df(df)
+        >>> safe_df['col'].dtype
+        dtype('O')  # All values now strings: '1', 'text', '3.5'
+    """
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
@@ -58,8 +75,19 @@ def safe_convert_df(df: pd.DataFrame) -> pd.DataFrame:
                 out[col] = out[col].astype(str)
     return out
 
+# ---- Missing Value Detection ----
 
 def detect_missing(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    """
+    Detect rows with missing (null/NaN) values in specified columns.
+    
+    Identifies all rows that contain at least one missing value in the specified
+    columns and adds metadata columns describing which columns are missing.
+    
+    Args:
+        df: Input DataFrame to check for missing values
+        cols: List of column names to check for missing values
+    """
     mask = df[cols].isnull().any(axis=1)
     result = df[mask].copy()
     result["__issues__"] = result.apply(
@@ -70,7 +98,23 @@ def detect_missing(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     return result
 
 
+# ---- Duplicate Detection ----
+
 def detect_duplicates(df: pd.DataFrame, cols: list, keep: str = "first") -> pd.DataFrame:
+    """
+    Detect duplicate rows based on specified columns.
+    
+    Identifies rows that are duplicates based on the values in the specified columns.
+    Can keep the first occurrence, last occurrence, or mark all duplicates.
+    
+    Args:
+        df: Input DataFrame to check for duplicates
+        cols: List of column names to use for duplicate detection
+        keep: Which duplicates to mark:
+            - 'first': Mark all duplicates except the first occurrence
+            - 'last': Mark all duplicates except the last occurrence
+            - 'none': Mark all duplicate occurrences
+    """
     keep_arg = False if keep == "none" else keep
     dup_mask = df.duplicated(subset=cols, keep=keep_arg)
     result   = df[dup_mask].copy()
@@ -88,8 +132,22 @@ def detect_duplicates(df: pd.DataFrame, cols: list, keep: str = "first") -> pd.D
     result["__issue_type__"] = "Duplicate"
     return result
 
-
+# ---- Outlier Detection ----
 def detect_outliers(df: pd.DataFrame, cols: list, method: str = "IQR") -> pd.DataFrame:
+    """
+    Detect statistical outliers in numeric columns using either IQR or Z-score method.
+    
+    Identifies rows with outlier values in numeric columns based on either:
+    - IQR (Interquartile Range): Values outside Q1 - 1.5*IQR to Q3 + 1.5*IQR (This can be changed based on business logic)
+    - Z-score: Values beyond 3 standard deviations from the mean
+    
+    Args:
+        df: Input DataFrame to check for outliers
+        cols: List of column names to check (non-numeric columns are skipped)
+        method: Outlier detection method:
+            - 'IQR': Interquartile range method (default)
+            - 'Z-score': Standard deviation method
+    """
     num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
     if not num_cols:
         return pd.DataFrame()
@@ -120,8 +178,19 @@ def detect_outliers(df: pd.DataFrame, cols: list, method: str = "IQR") -> pd.Dat
     result["__issue_type__"] = "Outlier"
     return result
 
-
+# ---- Data Type issue Detection ----
 def detect_dtype_issues(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    """
+    Detect data type inconsistencies in columns.
+    
+    Identifies values that don't match the expected data type of their column.
+    For example, text values in numeric columns or invalid date strings in 
+    datetime columns.
+    
+    Args:
+        df: Input DataFrame to check for data type issues
+        cols: List of column names to check
+    """
     rows, issues = [], []
     for col in cols:
         expected = df[col].dtype
@@ -145,8 +214,29 @@ def detect_dtype_issues(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     result["__issue_type__"] = "Data Type Issue"
     return result
 
-
+# ----------------------------------------------------------
 def safe_concat_dedup(frames: list, base_cols: list) -> pd.DataFrame:
+    """
+    Safely concatenate multiple DataFrames and remove duplicates.
+    
+    Combines multiple DataFrames vertically, filters out empty DataFrames,
+    and removes duplicate rows based on specified columns.
+    
+    Args:
+        frames: List of DataFrames to concatenate
+        base_cols: Column names to use for duplicate detection after concatenation
+        
+    Returns:
+        Combined DataFrame with duplicates removed, or empty DataFrame if all
+        input frames are empty
+        
+    Example:
+        >>> df1 = pd.DataFrame({'A': [1, 2]})
+        >>> df2 = pd.DataFrame({'A': [2, 3]})
+        >>> combined = safe_concat_dedup([df1, df2], ['A'])
+        >>> len(combined)
+        3  # Values: 1, 2, 3 (duplicate 2 removed)
+    """
     non_empty = [f for f in frames if not f.empty]
     if not non_empty:
         return pd.DataFrame()
@@ -158,6 +248,25 @@ def safe_concat_dedup(frames: list, base_cols: list) -> pd.DataFrame:
 
 
 def coerce_cell(v):
+    """
+    Convert a cell value to a JSON-serializable type for Excel export.
+    
+    Converts numpy types and special values to standard Python types that can
+    be safely written to Excel files. Handles NaN values, numpy integers/floats,
+    and complex objects.
+    
+    Args:
+        v: Value to convert (can be any type)
+        
+    Returns:
+        JSON-serializable Python type:
+        - np.integer → int
+        - np.floating (NaN) → None
+        - np.floating (valid) → float
+        - np.bool_ → bool
+        - Complex objects → str
+        - Others → unchanged
+    """
     if isinstance(v, (np.integer,)):          return int(v)
     if isinstance(v, (np.floating,)):         return None if np.isnan(v) else float(v)
     if isinstance(v, (np.bool_,)):            return bool(v)
@@ -174,6 +283,30 @@ def build_excel_export(
     dtype_df: pd.DataFrame,
     selected_cols: list,
 ) -> bytes:
+    """
+    Generate a professionally formatted Excel workbook for data quality report.
+    
+    Creates a multi-sheet Excel file containing:
+    - Summary sheet with metrics and counts
+    - Separate sheets for each issue type (missing values, duplicates, outliers, type issues)
+    - Combined "All Issues" sheet
+    - Original data sheet
+    
+    All sheets are styled with:
+    - Color-coded headers and issue types
+    - Borders and alternating row colors
+    - Auto-sized columns
+    - Professional fonts and alignment
+    
+    Args:
+        original: Original DataFrame before quality checks
+        missing_df: DataFrame with missing value issues
+        duplicate_df: DataFrame with duplicate issues
+        outlier_df: DataFrame with outlier issues
+        dtype_df: DataFrame with data type issues
+        selected_cols: List of column names that were checked
+        
+    """
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -191,6 +324,7 @@ def build_excel_export(
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     def style_header(ws):
+        """Apply professional header styling to the first row of a worksheet."""
         for cell in ws[1]:
             cell.font      = Font(bold=True, color=COLORS["header_fg"], name="Arial", size=10)
             cell.fill      = PatternFill("solid", start_color=COLORS["header_bg"])
@@ -199,6 +333,14 @@ def build_excel_export(
         ws.row_dimensions[1].height = 30
 
     def write_sheet(ws, sheet_df, fill_color):
+        """
+        Write data to a worksheet with formatting.
+        
+        Args:
+            ws: openpyxl Worksheet object
+            sheet_df: DataFrame to write to the sheet
+            fill_color: Hex color code for alternating row fills
+        """
         if sheet_df.empty:
             ws.append(["No issues found."])
             return
@@ -225,6 +367,7 @@ def build_excel_export(
             val_len = int(sheet_df[col].astype(str).str.len().fillna(0).max()) if col in sheet_df.columns else 0
             ws.column_dimensions[get_column_letter(col_idx)].width = min(max(hdr_len, val_len) + 4, 40)
 
+    # Summary sheet
     ws_sum = wb.create_sheet("Summary")
     combined_count = len(
         safe_concat_dedup([missing_df, duplicate_df, outlier_df, dtype_df], list(original.columns))
@@ -255,6 +398,7 @@ def build_excel_export(
     ws_sum.column_dimensions["A"].width = 28
     ws_sum.column_dimensions["B"].width = 50
 
+    # Issue sheets
     write_sheet(wb.create_sheet("Missing Values"),   missing_df,   COLORS["missing"])
     write_sheet(wb.create_sheet("Duplicates"),       duplicate_df, COLORS["duplicate"])
     write_sheet(wb.create_sheet("Outliers"),         outlier_df,   COLORS["outlier"])
@@ -265,6 +409,7 @@ def build_excel_export(
         COLORS["alt_row"],
     )
 
+    # Original data sheet
     ws_orig = wb.create_sheet("Original Data")
     ws_orig.append(list(original.columns))
     style_header(ws_orig)
@@ -284,6 +429,22 @@ def build_excel_export(
 
 
 def show_issue_table(tab, issue_df, label):
+    """
+    Display an issue DataFrame in a Streamlit tab with formatted output.
+    
+    Shows either a success message (if no issues) or a formatted data table
+    with issue details. Removes internal columns and renames display columns
+    for better readability.
+    
+    Args:
+        tab: Streamlit tab object where the table will be displayed
+        issue_df: DataFrame containing issue data (with __issue_type__ and __issues__ columns)
+        label: Human-readable label for the issue type (e.g., "duplicates", "outliers")
+        
+    Example:
+        >>> with st.tabs(["Missing Values"]) as tabs:
+        ...     show_issue_table(tabs[0], missing_df, "missing values")
+    """
     with tab:
         if issue_df.empty:
             st.success(f"No {label} detected in the selected columns.")
@@ -295,9 +456,7 @@ def show_issue_table(tab, issue_df, label):
             disp = disp.rename(columns={"__issue_type__": "Issue Type", "__issues__": "Issue Detail"})
             st.dataframe(safe_convert_df(disp), use_container_width=True, height=300)
             st.caption(f"{len(issue_df):,} row(s) flagged")
-
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ---- Sidebar ----------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
 
@@ -342,7 +501,7 @@ with st.sidebar:
     )
 
 
-# ── File Upload ───────────────────────────────────────────────────────────────
+# ── File Upload ----------------------------------------------------------
 uploaded = st.file_uploader(
     "📂 Upload Excel File (.xlsx / .xls)",
     type=["xlsx", "xls"],
@@ -353,7 +512,7 @@ if uploaded is None:
     st.info("Upload an Excel file to get started.")
     st.stop()
 
-# ── Load Data ─────────────────────────────────────────────────────────────────
+# ── Load Data ----------------------------------------------------------
 try:
     all_sheets = pd.read_excel(uploaded, sheet_name=None)
 except Exception as e:
@@ -362,8 +521,7 @@ except Exception as e:
 
 sheet_names = list(all_sheets.keys())
 
-# ── Sheet Selection ───────────────────────────────────────────────────────────
-# KEY FIX: use on_change to detect sheet switches and reset column state
+# --- Sheet Selection ----------------------------------------------------------
 def on_sheet_change():
     """Reset column selection and Select All trigger when sheet changes."""
     st.session_state["select_all_triggered"]  = False
@@ -395,7 +553,7 @@ st.markdown(
 st.dataframe(safe_convert_df(df.head(50)), use_container_width=True, height=240)
 
 
-# ── Column Selection ──────────────────────────────────────────────────────────
+# -- Column Selection ----------------------------------------------------------
 st.markdown("<div class='section-header'>Select Columns to Check</div>", unsafe_allow_html=True)
 
 # Initialise session state keys safely
@@ -442,7 +600,7 @@ if not selected_cols:
     st.stop()
 
 
-# ── Run Checks ────────────────────────────────────────────────────────────────
+# ── Run Checks ----------------------------------------------------------
 with st.spinner("Running quality checks…"):
     missing_df = detect_missing(df, selected_cols) if check_missing else pd.DataFrame()
 
@@ -456,7 +614,7 @@ with st.spinner("Running quality checks…"):
     dtype_df   = detect_dtype_issues(df, selected_cols)             if check_dtype   else pd.DataFrame()
 
 
-# ── Summary Metrics ───────────────────────────────────────────────────────────
+# ── Summary Metrics ----------------------------------------------------------
 st.markdown("<div class='section-header'>📊 Quality Summary</div>", unsafe_allow_html=True)
 m1, m2, m3, m4, m5 = st.columns(5)
 
@@ -471,7 +629,7 @@ m4.metric("⚠️ Outlier Rows",       f"{len(outlier_df):,}")
 m5.metric("🔠 Type Issue Rows",    f"{len(dtype_df):,}")
 
 
-# ── Per-Column Stats ──────────────────────────────────────────────────────────
+# ── Per-Column Stats ----------------------------------------------------------
 with st.expander("📈 Column-Level Statistics", expanded=False):
     stats_rows = []
     for col in selected_cols:
@@ -490,7 +648,7 @@ with st.expander("📈 Column-Level Statistics", expanded=False):
     st.dataframe(pd.DataFrame(stats_rows), use_container_width=True)
 
 
-# ── Issue Tabs ────────────────────────────────────────────────────────────────
+# ── Issue Tabs ----------------------------------------------------------
 st.markdown("<div class='section-header'>Issue Details</div>", unsafe_allow_html=True)
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "❌ Missing Values",
@@ -521,7 +679,7 @@ with tab5:
         st.caption(f"{len(combined_all):,} total unique issue row(s)")
 
 
-# ── Export ────────────────────────────────────────────────────────────────────
+# ── Export ----------------------------------------------------------
 st.markdown("<div class='section-header'>⬇️ Export Results</div>", unsafe_allow_html=True)
 
 if missing_df.empty and duplicate_df.empty and outlier_df.empty and dtype_df.empty:
