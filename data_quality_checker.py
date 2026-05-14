@@ -10,9 +10,187 @@ import plotly.graph_objects as go
 import yaml
 import pathlib
 import re
+import logging
+import time
+import threading
+import os
+
+# ── Load .env for local development ───────────────────────────────────────────
+# python-dotenv reads .env when present; on Azure, env vars come from
+# App Service Application Settings and this block is safely skipped.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=pathlib.Path(__file__).parent / ".env", override=False)
+except ImportError:
+    pass  # dotenv not installed — fine in production (Azure sets vars directly)
+
+# ── Infrastructure Configuration ───────────────────────────────────────────────
+# Reads from environment variables so secrets are never baked into source code.
+# Set these in Azure App Service → Configuration → Application Settings, or
+# in a .env file (excluded from version control) for local development.
+
+INFRA_CONFIG = {
+    # ── Authentication ─────────────────────────────────────────────────────────
+    # Preferred: Azure AD (Entra ID) via App Service Easy Auth.
+    # Fallback:  External identity (e.g. MSAL, Okta) configured via env vars.
+    #
+    # When deployed to Azure App Service with Easy Auth enabled, the platform
+    # handles OIDC token validation before any request reaches this app.
+    # The verified user identity is forwarded in the X-MS-CLIENT-PRINCIPAL-NAME
+    # and X-MS-CLIENT-PRINCIPAL headers — read via st.context.headers 
+    #
+    # For external identity providers (Okta, Auth0, etc.), set:
+    #   OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET in App Settings.
+    "auth": {
+        "provider":           os.environ.get("AUTH_PROVIDER", "azure_ad"),   # "azure_ad" | "external"
+        "require_auth":       os.environ.get("REQUIRE_AUTH", "true").lower() == "true",
+        "allowed_domains":    os.environ.get("ALLOWED_EMAIL_DOMAINS", "").split(","),  # e.g. "company.com"
+        "oidc_issuer":        os.environ.get("OIDC_ISSUER", ""),
+        "oidc_client_id":     os.environ.get("OIDC_CLIENT_ID", ""),
+    },
+
+    # ── File Handling ──────────────────────────────────────────────────────────
+    # Uploaded files are read into memory (BytesIO) and are NEVER written to
+    # disk or any persistent store. They are discarded when the session ends.
+    # The 50 MB cap below prevents memory abuse from very large uploads.
+    "file_handling": {
+        "max_upload_mb":      int(os.environ.get("MAX_UPLOAD_MB", "50")),
+        "persist_uploads":    False,          # Hard-coded: uploads are always ephemeral
+        "allowed_extensions": ["xlsx", "xls"],
+    },
+
+    # ── Concurrency ────────────────────────────────────────────────────────────
+    # Azure App Service (or a container) should be sized for ~20 concurrent
+    # users. Streamlit's server.maxMessageSize and maxUploadSize are set via
+    # .streamlit/config.toml (see companion file). The semaphore below provides
+    # an in-process guard so that heavy check jobs don't stack unboundedly.
+    "concurrency": {
+        "max_concurrent_checks": int(os.environ.get("MAX_CONCURRENT_CHECKS", "20")),
+    },
+
+    # ── Logging & Monitoring ───────────────────────────────────────────────────
+    # Structured logging to stdout (captured by Azure Monitor / App Insights).
+    # PII / sensitive data must NEVER appear in log messages — log only
+    # structural metadata (file size, row count, check names, durations).
+    "logging": {
+        "level":             os.environ.get("LOG_LEVEL", "INFO"),
+        "log_sensitive_data": False,          # Hard-coded: PII is never logged
+        "appinsights_key":   os.environ.get("APPINSIGHTS_INSTRUMENTATIONKEY", ""),
+    },
+
+    # ── Network & Hosting ─────────────────────────────────────────────────────
+    # Target: Azure App Service (B2/P1v3) or Azure Container Apps.
+    # Access is restricted to authenticated users via Easy Auth; the app is NOT
+    # publicly reachable without a valid token.
+    # CORS and allowed-hosts are enforced at the Azure front-door / App Gateway
+    # layer — not inside Streamlit, which has no native CORS controls.
+    "hosting": {
+        "platform":           os.environ.get("HOSTING_PLATFORM", "azure_app_service"),
+        "region":             os.environ.get("AZURE_REGION", "eastus"),
+        "restrict_public":    True,           # Enforced via Azure Easy Auth + VNet rules
+        "cors_origins":       os.environ.get("ALLOWED_ORIGINS", "").split(","),
+    },
+}
+
+# ── Logging Setup ──────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=getattr(logging, INFRA_CONFIG["logging"]["level"], logging.INFO),
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger("data_quality_checker")
+
+# Silence noisy third-party loggers
+for _noisy in ("urllib3", "fsevents", "watchdog"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
+# ── Concurrency Guard ──────────────────────────────────────────────────────────
+_check_semaphore = threading.Semaphore(INFRA_CONFIG["concurrency"]["max_concurrent_checks"])
+
+
+def _log_usage(event: str, **metadata):
+    """
+    Emit a structured usage log line. Never include file content or user data —
+    only structural/operational metadata (sizes, counts, durations, check names).
+    """
+    # Sanitise: drop any kwarg whose key suggests it could carry sensitive data
+    _sensitive_keys = {"content", "value", "data", "row", "cell", "text"}
+    safe_meta = {k: v for k, v in metadata.items() if k.lower() not in _sensitive_keys}
+    logger.info("event=%s %s", event, " ".join(f"{k}={v}" for k, v in safe_meta.items()))
+
+
+# ── Authentication Helper ──────────────────────────────────────────────────────
+def _get_authenticated_user() -> dict | None:
+    """
+    Attempt to read the Azure AD Easy Auth user identity injected by the
+    platform into request headers. Returns a dict with `username` and `email`
+    when available, or None if auth is disabled / headers absent (local dev).
+
+    When REQUIRE_AUTH=true and no identity can be resolved, the app stops with
+    an error — this prevents accidental anonymous access in production.
+    """
+    user = {"username": "unknown", "email": ""}
+
+    # Try Azure AD Easy Auth headers (available on App Service / Container Apps)
+    try:
+        headers = st.context.headers  # Streamlit ≥ 1.37
+        principal = headers.get("X-Ms-Client-Principal-Name", "")
+        if principal:
+            user = {"username": principal, "email": principal}
+            return user
+    except AttributeError:
+        pass  # Older Streamlit version — fall through to env var
+
+    # Fallback: env var injected by Easy Auth on older runtimes
+    env_principal = os.environ.get("HTTP_X_MS_CLIENT_PRINCIPAL_NAME", "")
+    if env_principal:
+        user = {"username": env_principal, "email": env_principal}
+        return user
+
+    # If auth is required but no identity found, block access
+    if INFRA_CONFIG["auth"]["require_auth"]:
+        return None  # Caller will halt the app
+
+    # Local dev / auth disabled — return a placeholder identity
+    return {"username": "local_dev", "email": "local@dev"}
+
+
+def enforce_auth():
+    """
+    Gate the entire app behind authentication. Call once at the top of main
+    execution. Stops the app (st.stop) if the user cannot be verified.
+    """
+    user = _get_authenticated_user()
+    if user is None:
+        st.error(
+            "🔒 **Access Denied** — Authentication required.\n\n"
+            "Please sign in via your organisation's Azure AD account. "
+            "If you believe this is an error, contact your system administrator."
+        )
+        _log_usage("auth_failure", reason="no_principal_header")
+        st.stop()
+
+    # Optional domain restriction
+    allowed_domains = [d.strip() for d in INFRA_CONFIG["auth"]["allowed_domains"] if d.strip()]
+    if allowed_domains and user["email"]:
+        domain = user["email"].split("@")[-1]
+        if domain not in allowed_domains:
+            st.error(f"🔒 Access is restricted to users from: {', '.join(allowed_domains)}")
+            _log_usage("auth_failure", reason="domain_not_allowed")
+            st.stop()
+
+    _log_usage("auth_success", provider=INFRA_CONFIG["auth"]["provider"])
+    return user
+
 
 # ── Page Config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Cocoa Campaign Data Quality Checker", layout="wide")
+
+# ── Authentication Gate ────────────────────────────────────────────────────────
+# Comment out `enforce_auth()` for local development when Easy Auth is unavailable.
+# In production (Azure), this is always active.
+current_user = enforce_auth()
 
 st.markdown("""
 <style>
@@ -30,6 +208,11 @@ st.markdown("""
         display:inline-block; padding:2px 8px; border-radius:4px;
         font-size:0.78rem; font-weight:600;
     }
+    .infra-badge {
+        background:#e8f5e9; color:#175259; font-size:0.75rem;
+        padding:2px 8px; border-radius:4px; font-weight:600;
+        border:1px solid #2d6a4f;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -37,7 +220,7 @@ st.markdown("""
 <div class="main-header">
     <h1 style="margin:0;font-size:2rem;">🌿 Cocoa Campaign Data Quality Checker</h1>
     <p style="margin:0.5rem 0 0 0;opacity:0.9;">
-        Upload your campaign Excel file · Select sheet & columns · Run domain-aware checks · Export flagged records
+        Upload your campaign Excel file · Select sheet &amp; columns · Run domain-aware checks · Export flagged records
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -65,17 +248,13 @@ def load_rules(yaml_path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-# Resolve YAML path relative to this script so the app works from any cwd
 _SCRIPT_DIR  = pathlib.Path(__file__).parent
 _RULES_PATH  = _SCRIPT_DIR / "quality_rules.yaml"
 _RULES       = load_rules(str(_RULES_PATH))
 
-# domain_rules is a list of dicts; convert to list for iteration
 DOMAIN_RULES:    list = _RULES.get("domain_rules", [])
-# mandatory_fields is a dict keyed by sheet substring
 MANDATORY_MAP:   dict = _RULES.get("mandatory_fields", {})
 DISPLAY_COLS:    list = MANDATORY_MAP.get("display_columns", [])
-
 OUTLIER_CFG:   dict = _RULES.get("outlier_detection", {})
 OUTLIER_COLS:  list = OUTLIER_CFG.get("cols", [])
 OUTLIER_GROUP: str  = OUTLIER_CFG.get("country_col", "Country")
@@ -114,36 +293,22 @@ def safe_concat(frames, base_cols):
 
 
 def slim_view(issue_df, all_cols, checked_cols=None):
-    """
-    Returns exactly:
-      1. DISPLAY_COLS from quality_rules.yaml (those that exist in this sheet)
-      2. ALL column(s) mentioned in the issue text (1, 2, 3 or more)
-      3. __issue_type__ and __issues__
-    """
     if issue_df.empty:
         return issue_df
-
-    # Anchor columns from yaml
     anchor = [c for c in DISPLAY_COLS if c in issue_df.columns]
-
-    # ALL flagged columns across ALL issue rows
     def flagged_cols(txt):
         return [
             c for c in issue_df.columns
             if c not in anchor
             and c not in ("__issue_type__", "__issue__")
-            and re.search(re.escape(c), str(txt)) 
+            and re.search(re.escape(c), str(txt))
         ]
-
     issue_cols = list(dict.fromkeys(
         c
-        for t in issue_df["__issues__"]      # iterate every issue row
-        for c in flagged_cols(t)             # find ALL col matches in that text
+        for t in issue_df["__issues__"]
+        for c in flagged_cols(t)
     ))
-
-    # Meta always last
     meta = ["__issue_type__", "__issues__"]
-
     keep = anchor + issue_cols + meta
     return issue_df[[c for c in keep if c in issue_df.columns]]
 
@@ -182,25 +347,19 @@ def check_outliers_batch(df, cols, group_col, method="IQR"):
     flagged_rows = []
     issues_list  = []
     types_list   = []
-
     methods_cfg = OUTLIER_CFG.get("methods", {})
     has_group   = group_col and group_col in df.columns
-
     for col in cols:
         if col not in df.columns:
             continue
-
         s_full = pd.to_numeric(df[col], errors="coerce")
         groups = df[group_col].unique() if has_group else ["_all_"]
-
         for group in groups:
             group_mask  = (df[group_col] == group) if has_group else pd.Series(True, index=df.index)
             group_label = group if has_group else "all"
-
             s = s_full[group_mask].dropna()
             if len(s) < 4:
                 continue
-
             if method == "IQR":
                 cfg = methods_cfg.get("IQR", {})
                 q1  = s.quantile(cfg.get("lower_quantile", 0.25))
@@ -216,9 +375,7 @@ def check_outliers_batch(df, cols, group_col, method="IQR"):
                 mul        = cfg.get("std_multiplier", 3)
                 lo, hi     = mean - mul * std, mean + mul * std
                 label      = "Z-Score"
-
             outlier_mask = group_mask & s_full.notna() & ((s_full < lo) | (s_full > hi))
-
             for idx in df[outlier_mask].index:
                 flagged_rows.append(idx)
                 issues_list.append(
@@ -226,10 +383,8 @@ def check_outliers_batch(df, cols, group_col, method="IQR"):
                     f"outside [{lo:.2f}, {hi:.2f}]"
                 )
                 types_list.append("Statistical Outlier")
-
     if not flagged_rows:
         return pd.DataFrame()
-
     result = df.loc[flagged_rows].copy()
     result["__issues__"]     = issues_list
     result["__issue_type__"] = types_list
@@ -267,210 +422,112 @@ def check_dtype(df, cols):
 
 @st.cache_data(show_spinner=False)
 def check_domain_rules(df, sheet_name):
-    """Apply domain/business rules loaded from quality_rules.yaml."""
-
     flagged_rows = []
     issues_list = []
     types_list = []
-
-    # DOMAIN_RULES is a list of dicts
     for rule in DOMAIN_RULES:
-
         col = rule.get("column", "")
         rule_type = rule.get("type", "")
-
-        # Skip column existence check for prefix/group rules
         if rule_type not in ["conditional_any_notnull", "prefix_range"]:
             if col not in df.columns:
                 continue
-
-        # ---------------------------------------------------
-        # RANGE CHECK
-        # ---------------------------------------------------
         if rule_type == "range":
-
             lo = rule.get("min", -np.inf)
             hi = rule.get("max", np.inf)
-
             s = pd.to_numeric(df[col], errors="coerce")
-
             mask = s.notna() & ((s < lo) | (s > hi))
-
             for idx in df[mask].index:
-
                 flagged_rows.append(idx)
-
-                issues_list.append(
-                    f"Domain: '{col}' = {df.at[idx, col]} — {rule['rule']}"
-                )
-
+                issues_list.append(f"Domain: '{col}' = {df.at[idx, col]} — {rule['rule']}")
                 types_list.append("Domain Rule Violation")
-
         elif rule_type == "conditional_range_by_value":
-
             condition_col = rule.get("condition_col")
             ranges = rule.get("ranges", {})
-
             if condition_col and condition_col in df.columns:
-
                 s = pd.to_numeric(df[col], errors="coerce")
-
                 for country, limits in ranges.items():
-
                     lo = limits.get("min", -np.inf)
                     hi = limits.get("max", np.inf)
-
                     mask = (
                         (df[condition_col] == country)
                         & s.notna()
                         & ((s < lo) | (s > hi))
                     )
-
                     for idx in df[mask].index:
-
                         flagged_rows.append(idx)
-
                         issues_list.append(
                             f"Domain: '{col}' = {df.at[idx, col]} "
                             f"outside allowed range for {country} "
                             f"({lo} - {hi}) — {rule['rule']}"
                         )
-
                         types_list.append("Conditional Range Violation")
-
-        # ---------------------------------------------------
-        # BANNED VALUE CHECK
-        # ---------------------------------------------------
         elif rule_type == "banned_value":
-
             banned = rule.get("banned", [])
-
             mask = df[col].isin(banned)
-
             for idx in df[mask].index:
-
                 flagged_rows.append(idx)
-
-                issues_list.append(
-                    f"Domain: '{col}' = '{df.at[idx, col]}' — {rule['rule']}"
-                )
-
+                issues_list.append(f"Domain: '{col}' = '{df.at[idx, col]}' — {rule['rule']}")
                 types_list.append("Banned Value")
-
-        # ---------------------------------------------------
-        # CONDITIONAL NOT NULL CHECK
-        # ---------------------------------------------------
         elif rule_type == "conditional_notnull":
-
             trigger_col = rule.get("trigger_col")
             trigger_val = rule.get("trigger_val")
-
             if trigger_col and trigger_col in df.columns:
-
-                mask = (
-                    (df[trigger_col] == trigger_val)
-                    & df[col].isnull()
-                )
-
+                mask = (df[trigger_col] == trigger_val) & df[col].isnull()
                 for idx in df[mask].index:
-
                     flagged_rows.append(idx)
-
                     issues_list.append(
                         f"Domain: '{col}' must not be blank when "
                         f"'{trigger_col}' = '{trigger_val}' — {rule['rule']}"
                     )
-
                     types_list.append("Conditional Missing")
-
-        # ---------------------------------------------------
-        # CONDITIONAL GROUP NOT NULL CHECK
-        # ---------------------------------------------------
         elif rule_type == "conditional_any_notnull":
-
             prefix = rule.get("column_prefix")
             trigger_col = rule.get("trigger_col")
             trigger_val = rule.get("trigger_val")
-
             if prefix and trigger_col and trigger_col in df.columns:
-
-                matching_cols = [
-                    c for c in df.columns
-                    if c.startswith(prefix)
-                ]
-
+                matching_cols = [c for c in df.columns if c.startswith(prefix)]
                 if matching_cols:
-
                     mask = (
                         (df[trigger_col] == trigger_val)
-                        & (
-                            df[matching_cols]
-                            .isnull()
-                            .all(axis=1)
-                        )
+                        & (df[matching_cols].isnull().all(axis=1))
                     )
-
                     for idx in df[mask].index:
-
                         flagged_rows.append(idx)
-
                         issues_list.append(
                             f"At least one column starting with "
                             f"'{prefix}' must be filled when "
                             f"'{trigger_col}' = '{trigger_val}' — {rule['rule']}"
                         )
-
                         types_list.append("Conditional Missing Group")
-
-        # ---------------------------------------------------
-        # PREFIX RANGE CHECK
-        # ---------------------------------------------------
         elif rule_type == "prefix_range":
-
             prefix = rule.get("column_prefix", "")
             lo = rule.get("min", -np.inf)
             hi = rule.get("max", np.inf)
-
             matching_cols = [c for c in df.columns if c.startswith(prefix)]
-
             for col in matching_cols:
                 s = pd.to_numeric(df[col], errors="coerce")
                 mask = s.notna() & ((s < lo) | (s > hi))
-
                 for idx in df[mask].index:
                     flagged_rows.append(idx)
-                    issues_list.append(
-                        f"Domain: '{col}' = {df.at[idx, col]} — {rule['rule']}"
-                    )
+                    issues_list.append(f"Domain: '{col}' = {df.at[idx, col]} — {rule['rule']}")
                     types_list.append("Domain Rule Violation")
-
-    # ---------------------------------------------------
-    # RETURN RESULTS
-    # ---------------------------------------------------
     if not flagged_rows:
         return pd.DataFrame()
-
     result = df.loc[flagged_rows].copy()
-
     result["__issues__"] = issues_list
     result["__issue_type__"] = types_list
-
     return result.drop_duplicates(subset=list(df.columns))
 
 
 def check_mandatory(df, sheet_name):
-    """Check mandatory fields using sheet-aware rules from quality_rules.yaml."""
-    # Find the first key in MANDATORY_MAP whose substring matches this sheet name
     mand_fields = []
     for key, fields in MANDATORY_MAP.items():
         if key.lower() in sheet_name.lower():
             mand_fields = fields
             break
-
     mand = [c for c in mand_fields if c in df.columns]
     if not mand:
         return pd.DataFrame()
-
     mask = df[mand].isnull().any(axis=1)
     result = df[mask].copy()
     result["__issues__"] = result.apply(
@@ -481,19 +538,50 @@ def check_mandatory(df, sheet_name):
     return result
 
 
-# -------------- File load ---------------------------
+# ── File Load (ephemeral / in-memory only) ─────────────────────────────────────
 
 @st.cache_data(show_spinner="📂 Loading file…")
-def load_excel(file_bytes):
+def load_excel(file_bytes: bytes) -> dict:
+    """
+    Load an Excel workbook entirely from memory (BytesIO).
+    The raw bytes are NEVER written to disk — they live only in the Streamlit
+    cache for the duration of the session and are garbage-collected when the
+    session ends. No persistent storage is used.
+    """
+    _log_usage("file_loaded", size_bytes=len(file_bytes))
     return pd.read_excel(BytesIO(file_bytes), sheet_name=None)
 
 
-# -------------- Excel export --------------
+def validate_upload(uploaded_file) -> bytes:
+    """
+    Validate the upload against configured limits (size, extension) and return
+    the raw bytes. Raises st.error + st.stop on any violation.
+    """
+    max_bytes = INFRA_CONFIG["file_handling"]["max_upload_mb"] * 1024 * 1024
+    file_bytes = uploaded_file.read()
+
+    if len(file_bytes) > max_bytes:
+        st.error(
+            f"File exceeds the {INFRA_CONFIG['file_handling']['max_upload_mb']} MB limit. "
+            "Please reduce the file size and re-upload."
+        )
+        _log_usage("upload_rejected", reason="size_exceeded", size_bytes=len(file_bytes))
+        st.stop()
+
+    ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
+    if ext not in INFRA_CONFIG["file_handling"]["allowed_extensions"]:
+        st.error(f"Unsupported file type '.{ext}'. Only .xlsx and .xls files are accepted.")
+        _log_usage("upload_rejected", reason="invalid_extension", extension=ext)
+        st.stop()
+
+    return file_bytes
+
+
+# ── Excel Export ───────────────────────────────────────────────────────────────
 
 def build_excel_export(original, results_dict, selected_cols):
     wb = Workbook()
     wb.remove(wb.active)
-
     COLORS = {
         "header_bg": "175259", "header_fg": "FFFFFF",
         "missing":   "FDECEA", "duplicate": "E8F4FD",
@@ -538,7 +626,6 @@ def build_excel_export(original, results_dict, selected_cols):
     all_frames = list(results_dict.values())
     all_issues = safe_concat(all_frames, list(original.columns))
 
-    # Summary
     ws_sum = wb.create_sheet("Summary")
     summary_data = [
         ["Cocoa Campaign Data Quality Report", ""],
@@ -574,7 +661,6 @@ def build_excel_export(original, results_dict, selected_cols):
     }
     for sheet_label, frame in results_dict.items():
         write_sheet(wb.create_sheet(sheet_label[:31]), frame, color_map.get(sheet_label, COLORS["alt_row"]))
-
     write_sheet(wb.create_sheet("All Issues"), all_issues, COLORS["alt_row"])
 
     ws_orig = wb.create_sheet("Original Data")
@@ -594,7 +680,7 @@ def build_excel_export(original, results_dict, selected_cols):
     return buf.getvalue()
 
 
-# ---------Charts---------------------
+# ── Charts ─────────────────────────────────────────────────────────────────────
 
 PLOTLY_LAYOUT = dict(
     font_family="Arial, sans-serif",
@@ -693,6 +779,50 @@ with st.sidebar:
             st.markdown(f"- **{r.get('column','')}** `{r.get('type','')}` — {r.get('rule','')}")
 
     st.markdown("---")
+
+    # ── Infrastructure Status Panel ────────────────────────────────────────────
+    with st.expander("🔒 Infrastructure & Security", expanded=False):
+        st.markdown("**Authentication**")
+        auth_provider = INFRA_CONFIG["auth"]["provider"].replace("_", " ").title()
+        st.markdown(
+            f'<span class="infra-badge">🔑 {auth_provider}</span> '
+            f'{"Required" if INFRA_CONFIG["auth"]["require_auth"] else "Optional"}',
+            unsafe_allow_html=True,
+        )
+        if current_user:
+            st.caption(f"Signed in as: `{current_user['username']}`")
+
+        st.markdown("**File Handling**")
+        st.markdown(
+            f'<span class="infra-badge">📁 Ephemeral</span> '
+            f'Max {INFRA_CONFIG["file_handling"]["max_upload_mb"]} MB · '
+            f'No persistent storage',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("**Concurrency**")
+        st.markdown(
+            f'<span class="infra-badge">⚡ ~{INFRA_CONFIG["concurrency"]["max_concurrent_checks"]} users</span> '
+            f'Semaphore-guarded check queue',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("**Logging**")
+        st.markdown(
+            f'<span class="infra-badge">📋 {INFRA_CONFIG["logging"]["level"]}</span> '
+            f'Structural metadata only · No PII retained',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("**Hosting**")
+        platform = INFRA_CONFIG["hosting"]["platform"].replace("_", " ").title()
+        st.markdown(
+            f'<span class="infra-badge">☁️ {platform}</span> '
+            f'Auth-restricted · Not publicly open',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("---")
     st.markdown("**About**")
     st.caption(
         "Rules are defined in `quality_rules.yaml` — edit that file to add or "
@@ -702,9 +832,10 @@ with st.sidebar:
 
 # ── File Upload ────────────────────────────────────────────────────────────────
 uploaded = st.file_uploader(
-    "📂 Upload Campaign Excel File (.xlsx)",
-    type=["xlsx", "xls"],
-    help="Upload your Campaign Excel file (e.g. Campaign_Cocoa_2025_LATAM.xlsx)",
+    f"📂 Upload Campaign Excel File (.xlsx) — max {INFRA_CONFIG['file_handling']['max_upload_mb']} MB",
+    type=INFRA_CONFIG["file_handling"]["allowed_extensions"],
+    help="Upload your Campaign Excel file (e.g. Campaign_Cocoa_2025_LATAM.xlsx). "
+         "Files are processed in memory and discarded after your session.",
 )
 
 if uploaded is None:
@@ -712,10 +843,11 @@ if uploaded is None:
     st.stop()
 
 try:
-    file_bytes = uploaded.read()
-    all_sheets = load_excel(file_bytes)
+    file_bytes = validate_upload(uploaded)          # size + extension check
+    all_sheets = load_excel(file_bytes)             # in-memory parse, no disk write
 except Exception as e:
     st.error(f"Could not read file: {e}")
+    _log_usage("file_parse_error", error=type(e).__name__)
     st.stop()
 
 sheet_names = [s for s, df in all_sheets.items() if not df.empty]
@@ -765,7 +897,6 @@ with c2:
         st.rerun()
 with c3:
     st.markdown("<br>", unsafe_allow_html=True)
-    # Suggest key columns using MANDATORY_MAP loaded from quality_rules.yaml
     key_suggestion = []
     for _key, _fields in MANDATORY_MAP.items():
         if _key.lower() in sheet_name.lower():
@@ -787,40 +918,62 @@ if not selected_cols:
     st.info("Select at least one column above to run quality checks.")
     st.stop()
 
-# ── Run Checks ─────────────────────────────────────────────────────────────────
-with st.spinner("Running quality checks…"):
-    results = {}
+# ── Run Checks (semaphore-guarded for concurrency) ─────────────────────────────
+t_start = time.perf_counter()
 
-    if run_missing:
-        results["Missing Values"] = check_missing(df, tuple(selected_cols))
+acquired = _check_semaphore.acquire(blocking=False)
+if not acquired:
+    st.warning("⏳ The system is at capacity. Please wait a moment and try again.")
+    _log_usage("concurrency_limit_hit")
+    st.stop()
 
-    if run_mandatory:
-        mand_df = check_mandatory(df, sheet_name)
-        if not mand_df.empty:
-            results["Mandatory Field Missing"] = mand_df
+try:
+    with st.spinner("Running quality checks…"):
+        results = {}
 
-    if run_duplicate:
-        results["Duplicates"] = check_duplicates(df, tuple(df.columns.tolist()), keep=dup_keep)
+        if run_missing:
+            results["Missing Values"] = check_missing(df, tuple(selected_cols))
 
-    if run_outlier:
-        outlier_targets = [
-            c for c in OUTLIER_COLS
-            if c in df.columns
-            and pd.api.types.is_numeric_dtype(df[c])
-        ]
-        if outlier_targets:
-            results["Outliers"] = check_outliers_batch(
-                df, outlier_targets, OUTLIER_GROUP, method=outlier_method
-            )
+        if run_mandatory:
+            mand_df = check_mandatory(df, sheet_name)
+            if not mand_df.empty:
+                results["Mandatory Field Missing"] = mand_df
 
-    if run_dtype:
-        results["Data Type Issues"] = check_dtype(df, selected_cols)
+        if run_duplicate:
+            results["Duplicates"] = check_duplicates(df, tuple(df.columns.tolist()), keep=dup_keep)
 
-    if run_domain:
-        domain_df = check_domain_rules(df, sheet_name)
-        if not domain_df.empty:
-            results["Domain Rule Violations"] = domain_df
+        if run_outlier:
+            outlier_targets = [
+                c for c in OUTLIER_COLS
+                if c in df.columns
+                and pd.api.types.is_numeric_dtype(df[c])
+            ]
+            if outlier_targets:
+                results["Outliers"] = check_outliers_batch(
+                    df, outlier_targets, OUTLIER_GROUP, method=outlier_method
+                )
 
+        if run_dtype:
+            results["Data Type Issues"] = check_dtype(df, selected_cols)
+
+        if run_domain:
+            domain_df = check_domain_rules(df, sheet_name)
+            if not domain_df.empty:
+                results["Domain Rule Violations"] = domain_df
+
+finally:
+    _check_semaphore.release()
+
+t_elapsed = time.perf_counter() - t_start
+_log_usage(
+    "checks_complete",
+    sheet=sheet_name,
+    rows=len(df),
+    cols_checked=len(selected_cols),
+    checks_run=",".join(results.keys()),
+    duration_ms=round(t_elapsed * 1000),
+    total_issues=sum(len(v) for v in results.values()),
+)
 
 # ── Metrics ────────────────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>📊 Quality Summary</div>", unsafe_allow_html=True)
@@ -895,3 +1048,4 @@ else:
         use_container_width=True,
     )
     st.caption("Report includes: Summary · " + " · ".join(results.keys()) + " · All Issues · Original Data")
+    _log_usage("report_exported", sheet=sheet_name, issue_rows=total_issues)

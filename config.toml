@@ -1,0 +1,24 @@
+# .streamlit/config.toml
+# Deploy alongside data_quality_checker.py on Azure App Service or Azure Container Apps.
+# These settings complement the in-app INFRA_CONFIG dict.
+
+[server]
+# Aligned with concurrency target of ~20 users
+maxUploadSize      = 50        # MB — matches MAX_UPLOAD_MB env var
+maxMessageSize     = 50        # MB
+enableCORS         = false     # CORS enforced at Azure front-door layer, not here
+enableXsrfProtection = true    # Keep XSRF protection on
+headless           = true      # Required for container / App Service deployments
+
+[browser]
+# Prevent Streamlit from phoning home with usage stats
+gatherUsageStats   = false
+
+[logger]
+level              = "info"    # Overridden at runtime by LOG_LEVEL env var
+
+[theme]
+primaryColor       = "#175259"
+backgroundColor    = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor          = "#1A1A1A"
