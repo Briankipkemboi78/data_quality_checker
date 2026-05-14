@@ -1,0 +1,704 @@
+# ============================================================
+# Cocoa Campaign Data Quality Rules
+# ============================================================
+# Edit this file to add, remove, or adjust any validation rule.
+# The app loads this file at startup — no Python changes needed.
+#
+# Rule types:
+#   range                      – value must be between min and max (numeric)
+#   prefix_range               – range check applied to ALL columns whose name
+#                                starts with `column_prefix` (handles pandas
+#                                auto-renamed duplicates: col, col.1, col.2 …)
+#   banned_value               – flags rows where the column equals any value
+#                                in `banned`
+#   conditional_notnull        – flags rows where `column` is blank AND
+#                                `trigger_col` equals `trigger_val`
+#   conditional_range_by_value – per-country numeric range check
+#   conditional_any_notnull    – flags rows where ALL columns whose name starts
+#                                with `column_prefix` are blank AND
+#                                `trigger_col` equals `trigger_val`
+# ============================================================
+
+
+# ── Mandatory fields per sheet ─────────────────────────────────────────────────
+# Sheet matching is substring-based (case-insensitive).
+mandatory_fields:
+
+  "NCP M&E":
+    - EntityDisplayID
+    - Interviewee
+    - Enumerator
+    - Entity Name
+    - Country
+    - Date of Data Collection
+    - GPS Location - Long
+    - GPS Location - Lat
+    - Farmer ID Number
+    - Gender
+    - "What is the size of ALL COCOA PLOTS combined (hectares)?"
+    - "What is the total amount of cocoa harvested from ALL PLOTS combined, over the previous year? (kg of dry beans)"
+    - "Yield (kg/ha)"
+
+  "FAT Cocoa":
+    - EntityDisplayID
+    - Entity Name
+    - Country
+    - Enumerator
+    - "S.7 Did you use commercial chemical fertilizer in the last 12 months?"
+    - Total Score
+
+  "CFP 2025":
+    - EntityDisplayID
+    - Entity Name
+    - Country
+    - Growing only area includes cocoa and intercrops
+    - Total yields in assessment year
+    - Crop type
+    - Farm Archetype
+
+  "M&E Agrochemical":
+    - EntityDisplayID
+    - Entity Name
+    - Country
+    - "Which agrochemical products have you used during the last season?"
+    - "Active Ingredient Status"
+
+  "M&E Herbicide":
+    - EntityDisplayID
+    - Entity Name
+    - Country
+    - "Which herbicides have you used during the last season?"
+    - "Active Ingredient Status"
+
+  "M&E Fertilizer":
+    - EntityDisplayID
+    - Entity Name
+    - Country
+    - "If yes, which one"
+
+  "M&E GAP Observation":
+    - EntityDisplayID
+    - Entity Name
+    - Country
+    - Observation plot nr
+    - Trunk
+    - Crown
+    - Weeding
+    - Soil health
+
+  display_columns:
+    - EntitySystemID
+    - Date of Data Collection
+    - Country
+    - LastModified by
+
+
+# -------- Domain / business rules ----------------------------
+domain_rules:
+
+  # ------------ Agroforestry -----------------------------
+
+  # strata count: flag if >5 (all countries)
+  - column: "How many strata are there (including the cocoa canopy)?"
+    type: range
+    min: 1
+    max: 5
+    rule: ">5 strata is unusual — double check values"
+
+  # trees planted: must not be blank if AF.11.1 = Yes
+  - column: "How many trees did you plant?"
+    type: conditional_notnull
+    trigger_col: "Have you planted shade or agroforestry trees on the cocoa plot in past 12 months?"
+    trigger_val: "Yes"
+    rule: "If shade trees planted (Yes), number of trees planted must not be blank"
+
+  # trees planted per ha: must not be blank if AF.11.1 = Yes
+  - column: "How many trees did you plant / ha?"
+    type: conditional_notnull
+    trigger_col: "Have you planted shade or agroforestry trees on the cocoa plot in past 12 months?"
+    trigger_val: "Yes"
+    rule: "If shade trees planted (Yes), trees per ha must not be blank"
+
+  # tree source: covers all sub-columns sharing this prefix
+  # e.g. "Where did you get the trees from (Select all that apply) - Nestle?"
+  - column_prefix: "Where did you get the trees from"
+    type: conditional_any_notnull
+    trigger_col: "Have you planted shade or agroforestry trees on the cocoa plot in past 12 months?"
+    trigger_val: "Yes"
+    rule: "If shade trees planted (Yes), tree source must not be blank"
+
+  # shade tree products: must not be blank if AF.11.1 = Yes
+  - column: "Did any of the shade trees on your cocoa farm provide products you sold or consumed in the past 12 months?"
+    type: conditional_notnull
+    trigger_col: "Have you planted shade or agroforestry trees on the cocoa plot in past 12 months?"
+    trigger_val: "Yes"
+    rule: "If shade trees planted (Yes), shade tree product question must not be blank"
+
+  # which products: must not be blank if AF.11.6 = Yes
+  - column: "If yes, which products?"
+    type: conditional_notnull
+    trigger_col: "Did any of the shade trees on your cocoa farm provide products you sold or consumed in the past 12 months?"
+    trigger_val: "Yes, I sold them"
+    rule: "If shade trees provided products, which products must not be blank"
+
+
+  # ------------ IC.12 Household & Income -----------------------
+
+  # adults in household: must be >= 1
+  - column: "Number of adults in household"
+    type: range
+    min: 1
+    max: 20
+    rule: "Number of adults must be > 0; > 20 is unusually high"
+
+  # children in household
+  - column: "Number of children in household"
+    type: range
+    min: 0
+    max: 15
+    rule: ">15 children is unusually high for a household"
+
+  # children age <=13 cannot exceed total children
+  - column: "How many of these children are age 13 or younger?"
+    type: range
+    min: 0
+    max: 15
+    rule: "Cannot be greater than total number of children in household"
+
+  # income share percentages (each must be 0–100)
+  - column: "Cocoa"
+    type: range
+    min: 0
+    max: 100
+    rule: "Income share % (Cocoa) must be 0–100"
+
+  - column: "All other crops/livestock"
+    type: range
+    min: 0
+    max: 100
+    rule: "Income share % (Other crops/livestock) must be 0–100"
+
+  - column: "Financial assistance (from family, friends, pension, etc.)"
+    type: range
+    min: 0
+    max: 100
+    rule: "Income share % (Financial assistance) must be 0–100"
+
+  - column: "All other non-farm income"
+    type: range
+    min: 0
+    max: 100
+    rule: "Income share % (Non-farm) must be 0–100"
+
+  # total income share must equal 100
+  - column: "Total"
+    type: range
+    min: 100
+    max: 100
+    rule: "Total income share must equal exactly 100"
+
+  # fertilizer cost: must not be blank if fertilizer was used
+  - column: "What is the total (estimated) cost of fertilizer in a year?"
+    type: conditional_notnull
+    trigger_col: "S.7 Did you use commercial chemical fertilizer in the last 12 months?"
+    trigger_val: "Yes"
+    rule: "If fertilizer used (Yes), annual fertilizer cost must not be blank"
+
+
+  # ------------ Organic Fertilizer -------------------------
+
+  # which organic fertilizer: must not be blank if O.8.2 = Yes
+  - column: "Select all types of organic fertilizer applied"
+    type: conditional_notnull
+    trigger_col: "Did you use organic fertilizer in the last 12 months?"
+    trigger_val: "Yes"
+    rule: "If organic fertilizer used (Yes), type must not be blank"
+
+  # total volume organic fertilizer: must not be blank if O.8.2 = Yes
+  - column: "What was the total volume of organic fertilizer applied in the past 12 months?"
+    type: conditional_notnull
+    trigger_col: "Did you use organic fertilizer in the last 12 months?"
+    trigger_val: "Yes"
+    rule: "If organic fertilizer used (Yes), total volume must not be blank"
+
+  # O.8.9 — organic share of total fertilizer (0–100%)
+  - column: "What percentage of the total amount of all fertilizer applied (synthetic + organic) is organic?"
+    type: range
+    min: 0
+    max: 100
+    rule: "Organic share of fertilizer must be 0–100%"
+
+
+  # ------------ Farm & Plot --------------------------------
+
+  # number of cocoa plots (country-specific)
+  - column: "How many cocoa plots do you manage?"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Ivory Coast:
+        min: 1
+        max: 6
+      Ghana:
+        min: 1
+        max: 6
+      Brazil:
+        min: 1
+        max: 20
+      Cameroon:
+        min: 1
+        max:        # only min enforced (>=1)
+      Nigeria:
+        min: 1
+        max:
+      Indonesia:
+        min: 1
+        max:
+    rule: "Number of cocoa plots is outside expected country range"
+
+  # total cocoa plot size (country-specific)
+  - column: "What is the size of ALL COCOA PLOTS combined (hectares)?"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Ivory Coast:
+        min: 0.5
+        max: 48
+      Ghana:
+        min: 0.5
+        max: 14
+      Brazil:
+        min: 0.5
+        max: 600
+      Cameroon:
+        min: 0.5
+        max:        # only min enforced (>0.5)
+      Nigeria:
+        min: 0.5
+        max:
+      Indonesia:
+        min: 0.5
+        max:
+    rule: "Plot size is outside expected country range"
+
+  # yield (country-specific)
+  - column: "Yield (kg/ha)"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Ivory Coast:
+        min: 1.5
+        max: 1800
+      Ghana:
+        min: 1.5
+        max: 1500
+      Brazil:
+        min: 100
+        max: 3000
+    rule: "Yield outside expected country range"
+
+
+  # ------------ Pest & Disease ----------------------------
+
+  # prevention measures: must not be blank if PD.5.2 = Yes
+  - column: "What are you doing to prevent pests and diseases on the farm?"
+    type: conditional_notnull
+    trigger_col: "Have you observed pests or diseases on your farm in the past 12 months?"
+    trigger_val: "Yes"
+    rule: "If pests/diseases observed (Yes), prevention measures must not be blank"
+
+  # agrochemicals used: must not be blank if PD.5.3 = Using Agrochemicals
+  - column: "Which agrochemical products have you used during the last season?"
+    type: conditional_notnull
+    trigger_col: "What are you doing to prevent pests and diseases on the farm?"
+    trigger_val: "Using Agrochemicals"
+    rule: "If using agrochemicals, product list must not be blank"
+
+  # application frequency (country-specific)
+  # Ivory Coast & Ghana: 1–4 times; Brazil: 1–12 times
+  - column: "How often did you apply the agrochemical in the last 12 months?"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Ivory Coast:
+        min: 1
+        max: 4
+      Ghana:
+        min: 1
+        max: 4
+      Brazil:
+        min: 1
+        max: 12
+    rule: "Agrochemical application frequency is outside expected country range"
+
+
+  # ------------Seedlings ----------------------------------
+
+  # seedling source: covers all sub-columns sharing this prefix
+  # e.g. "Where did you obtain the seedlings - Government", "- NGO" etc.
+  - column_prefix: "Where did you obtain the seedlings"
+    type: conditional_any_notnull
+    trigger_col: "Have you bought or received cocoa seedlings during the past 12 months?"
+    trigger_val: "Yes"
+    rule: "If seedlings bought/received (Yes), source must be specified"
+
+  # Improved seedling count: must not be blank if R.9.1 = Yes
+  - column: "Number of new cocoa seedlings planted that are from new or improved varieties"
+    type: conditional_notnull
+    trigger_col: "Have you bought or received cocoa seedlings during the past 12 months?"
+    trigger_val: "Yes"
+    rule: "If seedlings bought/received (Yes), improved variety count must not be blank"
+
+  # improved seedling count: country-specific max
+  - column: "Number of new cocoa seedlings planted that are from new or improved varieties"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Brazil:
+        min: 0
+        max: 1200
+      Ghana:
+        min: 0
+        max: 1000
+      Ivory Coast:
+        min: 0
+        max: 1000
+      Cameroon:
+        min: 0
+        max: 1000
+      Nigeria:
+        min: 0
+        max: 1000
+    rule: "Number of improved seedlings exceeds expected country maximum"
+
+
+  # ------------ Fertilizer (Synthetic / Chemical) ---------
+
+  # total volume fertilizer: must not be blank if SE.7.1 = Yes
+  - column: "What was the total volume of fertilizer applied in the past 12 months?"
+    type: conditional_notnull
+    trigger_col: "S.7 Did you use commercial chemical fertilizer in the last 12 months?"
+    trigger_val: "Yes"
+    rule: "If chemical fertilizer used (Yes), total volume must not be blank"
+
+  # fertilizer volume per ha (country-specific)
+  # Covers "Total volume of fertilizer applied / ha" + ".1", ".2" suffixes
+  - column_prefix: "Total volume of fertilizer applied / ha"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Ivory Coast:
+        min: 1
+        max: 500
+      Ghana:
+        min: 1
+        max: 500
+      Brazil:
+        min: 1
+        max: 2000
+    rule: "Total fertilizer volume per ha is outside expected country range"
+
+  # individual fertilizer slot global fallback
+  # Covers "Volume of fertilizer applied / ha" + ".1", ".2" suffixes
+  - column_prefix: "Volume of fertilizer applied / ha"
+    type: prefix_range
+    min: 0
+    max: 3000
+    rule: ">3000 kg/ha is an unusually high fertilizer rate"
+
+  # fertilizer plan basis: must not be blank if SE.7.1 = Yes
+  - column: "Do you calculate your annual fertilizer plan on the basis of crop nutrient requirements (e.g. recent soil analysis, productivity, crop cycle)?"
+    type: conditional_notnull
+    trigger_col: "S.7 Did you use commercial chemical fertilizer in the last 12 months?"
+    trigger_val: "Yes"
+    rule: "If chemical fertilizer used (Yes), fertilizer planning basis must not be blank"
+
+  # soil analysis interval: must not be blank if SE.7.6 = Yes
+  - column: "On average, what is the interval of soil analysis (lab, soil test kit) for texture, pH, SOM, nitrogen (N), phosphorus (P), and potassium (K) (farm sample or a representative sample of a group of smallholdings in the same area)?"
+    type: conditional_notnull
+    trigger_col: "Has a soil analysis / test been performed (lab, soil test kit) at your farm or from a representative sample of a group of smallholdings in the same area?"
+    trigger_val: "Yes"
+    rule: "If soil analysis performed (Yes), interval must not be blank"
+
+  # soil organic matter %: valid range 0 < SOM <= 15%
+  - column: "Enter the percentage level of soil organic matter (SOM) in your soil, if known (%)"
+    type: range
+    min: 0.01
+    max: 15
+    rule: "Soil organic matter % must be > 0% and <= 15%"
+
+  # SOM: must not be blank if SE.7.6 = Yes
+  - column: "Enter the percentage level of soil organic matter (SOM) in your soil, if known (%)"
+    type: conditional_notnull
+    trigger_col: "Has a soil analysis / test been performed (lab, soil test kit) at your farm or from a representative sample of a group of smallholdings in the same area?"
+    trigger_val: "Yes"
+    rule: "If soil analysis performed (Yes), SOM % must not be blank"
+
+  #  soil pH: valid range
+  - column: "Enter the soil pH level, if known"
+    type: range
+    min: 3.5
+    max: 9.0
+    rule: "Soil pH must be between 3.5 and 9.0"
+
+  # soil pH: must not be blank if SE.7.6 = Yes
+  - column: "Enter the soil pH level, if known"
+    type: conditional_notnull
+    trigger_col: "Has a soil analysis / test been performed (lab, soil test kit) at your farm or from a representative sample of a group of smallholdings in the same area?"
+    trigger_val: "Yes"
+    rule: "If soil analysis performed (Yes), soil pH must not be blank"
+
+  # erosion control: must not be blank if SE.7.7 = Yes
+  - column: "What erosion control practices do you implement?"
+    type: conditional_notnull
+    trigger_col: "Do you implement erosion control practices?"
+    trigger_val: "Yes"
+    rule: "If erosion control implemented (Yes), practices must not be blank"
+
+  # land cover crop %: 0–100
+  - column: "What is the percentage of cocoa crop land covered, during the whole year, with cover crops and/or application of crop residues, mulch, grass, clipping, straw and/or through agroforestry, cocoa canopy, etc..?"
+    type: range
+    min: 0
+    max: 100
+    rule: "Cocoa land cover % must be 0–100"
+
+
+  # ------------ Percentage / Coverage fields -------------------
+
+  # Agrochemical coverage % — covers base column + .1, .2 … suffixes
+  - column_prefix: "On what % of the cocoa growing area did you apply the agrochemical?"
+    type: prefix_range
+    min: 0
+    max: 100
+    rule: "Agrochemical coverage % must be between 0 and 100"
+
+  # Fertilizer coverage % — covers base column + .1, .2 … suffixes
+  - column_prefix: "On what % of the cocoa growing area did you apply the fertilizer?"
+    type: prefix_range
+    min: 0
+    max: 100
+    rule: "Fertilizer coverage % must be between 0 and 100"
+
+  # W.6.3.5 — herbicide coverage % (single column, no suffix variants)
+  - column: "On what % of the cocoa growing area did you apply the herbicide?"
+    type: range
+    min: 0
+    max: 100
+    rule: "Herbicide coverage % must be between 0 and 100"
+
+  # Percentage Concentration — covers base column + .1, .2 … suffixes
+  - column_prefix: "Percentage Concentration"
+    type: prefix_range
+    min: 0
+    max: 100
+    rule: "Concentration % must be between 0 and 100"
+
+  - column: "What is the percentage of the tree stock below 25 years of age?"
+    type: range
+    min: 0
+    max: 100
+    rule: "Tree stock age percentage must be 0–100"
+
+  - column: "What is the percentage of cocoa crop land that receives, annually, synthetic/chemical fertilizer?"
+    type: range
+    min: 0
+    max: 100
+    rule: "Synthetic fertilizer land coverage % must be 0–100"
+
+  - column: "What is the percentage of cocoa crop land that receives, annually, organic fertilizer, and/or composted organic matter, and/or biochar?"
+    type: range
+    min: 0
+    max: 100
+    rule: "Organic fertilizer land coverage % must be 0–100"
+
+
+  # ------------ Pruning -----------------------------------
+
+  - column: "If yes, what cycle or schedule do you use?"
+    type: conditional_notnull
+    trigger_col: "Do you prune your cocoa farm on an established cycle or calendar schedule?"
+    trigger_val: "Yes"
+    rule: "Pruning schedule must be specified when cycle pruning is confirmed (Yes)"
+
+
+  # ------------ Training -----------------------------------
+
+  - column: "If the answer to the training question Q14 is \"Yes\", please check that the enumerator has selected at least one of the answer options."
+    type: conditional_notnull
+    trigger_col: "Have you participated in cocoa-related training during the last 12 months?"
+    trigger_val: "Yes"
+    rule: "If training attended (Yes), training type must not be blank"
+
+
+  # ------------ Weed Management ----------------------------
+
+  # herbicide list: must not be blank if W.6.1 = Herbicides
+  - column: "Which herbicides have you used during the last season?"
+    type: conditional_notnull
+    trigger_col: "What weed management practices do you use?"
+    trigger_val: "Herbicides"
+    rule: "If herbicides used, herbicide list must not be blank"
+
+
+  # ------------ Water & Natural Resources ---------------
+
+  # WNR.10.1 — biodiversity habitat % (Brazil only, must be > 10%)
+  - column: "What is the percentage of agricultural area that consists of biodiversity habitats such as hedges, trees alley, wind breaks, flower strip, green belts, riparian area, border trees, natural habitats non farmed area (that could potentially be cultivated), etc.?"
+    type: conditional_range_by_value
+    condition_col: "Country"
+    ranges:
+      Brazil:
+        min: 10
+        max: 100
+    rule: "Brazil: Biodiversity habitat area must be > 10%"
+
+  # riparian buffer: must not be blank if water body present
+  - column: "Have you established a riparian buffer along the water body?"
+    type: conditional_notnull
+    trigger_col: "Do you have water bodies at your farm?"
+    trigger_val: "Yes"
+    rule: "Riparian buffer question must be answered when water body is present (Yes)"
+
+  # WNR.10.3.2 — riparian vegetation: must not be blank if water body present
+  - column: "Are the riparian buffer strips covered with natural vegetation (hedges, bushes, trees, etc.)?"
+    type: conditional_notnull
+    trigger_col: "Do you have water bodies at your farm?"
+    trigger_val: "Yes"
+    rule: "Riparian vegetation question must not be blank when water body is present (Yes)"
+
+  # WNR.10.3.3 — distance to water body: must not be blank if water body present
+  - column: "If you have water bodies at your farm, what is the minimum distance between field (fertilizer and pesticide application area) and the water body?"
+    type: conditional_notnull
+    trigger_col: "Do you have water bodies at your farm?"
+    trigger_val: "Yes"
+    rule: "Distance to water body must not be blank when water body is present (Yes)"
+
+  # WNR.10.5–10.9 — all require irrigation present (WNR.10.4 = Yes)
+  - column: "What irrigation practices do you apply?"
+    type: conditional_notnull
+    trigger_col: "Do you have irrigation on your farm?"
+    trigger_val: "Yes"
+    rule: "If irrigation present (Yes), practices must not be blank"
+
+  - column: "Do you monitor soil moisture or tree condition (flower bud development, leaf wilting) before applying irrigation?"
+    type: conditional_notnull
+    trigger_col: "Do you have irrigation on your farm?"
+    trigger_val: "Yes"
+    rule: "If irrigation present (Yes), soil/tree monitoring answer must not be blank"
+
+  - column: "Do you consistently monitor and record total water usage for irrigation at the farm?"
+    type: conditional_notnull
+    trigger_col: "Do you have irrigation on your farm?"
+    trigger_val: "Yes"
+    rule: "If irrigation present (Yes), water usage monitoring must not be blank"
+
+  - column: "How do you monitor water usage?"
+    type: conditional_notnull
+    trigger_col: "Do you have irrigation on your farm?"
+    trigger_val: "Yes"
+    rule: "If irrigation present (Yes), monitoring method must not be blank"
+
+  - column: "Water use in Irrigation (m3 water / ha / year)"
+    type: conditional_notnull
+    trigger_col: "Do you have irrigation on your farm?"
+    trigger_val: "Yes"
+    rule: "If irrigation present (Yes), water use volume must not be blank"
+
+  # ------------ GPS Coordinates --------------------------------
+
+  - column: "GPS Location - Lat"
+    type: range
+    min: -90
+    max: 90
+    rule: "Latitude must be between -90 and 90"
+
+  - column: "GPS Location - Long"
+    type: range
+    min: -180
+    max: 180
+    rule: "Longitude must be between -180 and 180"
+
+
+  # ------------ CFP-specific -----------------------------------
+
+  - column: "Percentage of dead plants"
+    type: range
+    min: 0
+    max: 100
+    rule: "Dead plant percentage must be 0–100"
+
+  - column: "Waste Fruit (%)"
+    type: range
+    min: 0
+    max: 100
+    rule: "Waste fruit percentage must be 0–100"
+
+  - column: "Crop age during the assessment year"
+    type: range
+    min: 1
+    max: 100
+    rule: "Crop age must be between 1 and 100 years"
+
+  - column: "Expected lifecycle duration"
+    type: range
+    min: 1
+    max: 100
+    rule: "Expected lifecycle must be between 1 and 100 years"
+
+  - column: "Number of plant per unit area"
+    type: range
+    min: 100
+    max: 3000
+    rule: "Cocoa density of <100 or >3000 trees/ha is unusual"
+
+
+  # ------------ Production LATAM -------------------------------
+
+  - column: "Area (ha)"
+    type: range
+    min: 0
+    max: 500
+    rule: "Plot area >500 ha is unusually large for a smallholder"
+
+  - column: "Cocoa Density (trees/ha)"
+    type: range
+    min: 100
+    max: 3000
+    rule: "Cocoa density outside 100–3000 trees/ha is unusual"
+
+  - column: "Production (kg)"
+    type: range
+    min: 0
+    max: 500000
+    rule: "Production >500,000 kg is unusually high for a single plot"
+
+
+# ── Statistical outlier detection ─────────────────────────────
+outlier_detection:
+  country_col: "Country"
+  methods:
+    IQR:
+      iqr_multiplier: 3
+      lower_quantile: 0.25
+      upper_quantile: 0.75
+    Z-Score:
+      std_multiplier: 3
+  cols:
+    - "Yield (kg/ha)"
+    - "What is the size of ALL COCOA PLOTS combined (hectares)?"
+    - "How many cocoa plots do you manage?"
+    - "Number of adults in household"
+    - "Number of children in household"
+    - "How many of these children are age 13 or younger?"
+    - "How many trees did you plant?"
+    - "How many trees did you plant / ha?"
+    - "Volume of fertilizer applied / ha"
+    - "Total volume of fertilizer applied / ha"
+    - "Percentage of dead plants"
+    - "Waste Fruit (%)"
+    - "Crop age during the assessment year"
+    - "Expected lifecycle duration"
+    - "Number of plant per unit area"
+    - "Area (ha)"
+    - "Cocoa Density (trees/ha)"
+    - "Production (kg)"
